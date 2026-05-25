@@ -1,4 +1,7 @@
+import 'dart:io';
+
 import 'package:flutter/cupertino.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as p;
 import 'package:provider/provider.dart';
 
@@ -11,6 +14,7 @@ import '../widgets/file_list_view.dart';
 import '../widgets/info_panel.dart';
 import '../widgets/path_status_bar.dart';
 import '../widgets/sidebar.dart';
+import '../widgets/terminal_panel.dart';
 import '../widgets/workflow_tab.dart';
 import 'settings_screen.dart';
 
@@ -28,6 +32,37 @@ class _HomeScreenState extends State<HomeScreen> {
   int _compactTab = 0;
   // Slide-in drawer state for compact.
   bool _drawerOpen = false;
+  // Integrated terminal state.
+  bool _terminalOpen = false;
+  double _terminalHeight = 280;
+  static const double _terminalMin = 120;
+  static const double _terminalMax = 600;
+
+  @override
+  void initState() {
+    super.initState();
+    HardwareKeyboard.instance.addHandler(_handleGlobalKey);
+  }
+
+  @override
+  void dispose() {
+    HardwareKeyboard.instance.removeHandler(_handleGlobalKey);
+    super.dispose();
+  }
+
+  // Cmd+J (macOS) / Ctrl+J (others) toggles the integrated terminal,
+  // matching VSCode's Toggle Panel shortcut. Runs ahead of focus dispatch
+  // so the terminal itself can't swallow the shortcut.
+  bool _handleGlobalKey(KeyEvent event) {
+    if (event is! KeyDownEvent) return false;
+    if (event.logicalKey != LogicalKeyboardKey.keyJ) return false;
+    final modOk = Platform.isMacOS
+        ? HardwareKeyboard.instance.isMetaPressed
+        : HardwareKeyboard.instance.isControlPressed;
+    if (!modOk) return false;
+    _toggleTerminal();
+    return true;
+  }
 
   void _openSettings() {
     Navigator.of(context).push(
@@ -38,6 +73,20 @@ class _HomeScreenState extends State<HomeScreen> {
   void _toggleDrawer() => setState(() => _drawerOpen = !_drawerOpen);
   void _closeDrawer() {
     if (_drawerOpen) setState(() => _drawerOpen = false);
+  }
+
+  void _toggleTerminal() =>
+      setState(() => _terminalOpen = !_terminalOpen);
+  void _closeTerminal() {
+    if (_terminalOpen) setState(() => _terminalOpen = false);
+  }
+
+  void _resizeTerminal(double deltaY) {
+    // Drag handle is on the top edge: dragging up (negative delta) grows.
+    setState(() {
+      _terminalHeight =
+          (_terminalHeight - deltaY).clamp(_terminalMin, _terminalMax);
+    });
   }
 
   @override
@@ -63,11 +112,21 @@ class _HomeScreenState extends State<HomeScreen> {
               onToggleDrawer: _toggleDrawer,
               onCloseDrawer: _closeDrawer,
               onSettings: _openSettings,
+              terminalOpen: _terminalOpen,
+              terminalHeight: _terminalHeight,
+              onToggleTerminal: _toggleTerminal,
+              onCloseTerminal: _closeTerminal,
+              onResizeTerminal: _resizeTerminal,
             )
           : _WideLayout(
               rightTab: _rightTab,
               onRightTabChanged: (i) => setState(() => _rightTab = i),
               onSettings: _openSettings,
+              terminalOpen: _terminalOpen,
+              terminalHeight: _terminalHeight,
+              onToggleTerminal: _toggleTerminal,
+              onCloseTerminal: _closeTerminal,
+              onResizeTerminal: _resizeTerminal,
             ),
     );
   }
@@ -82,16 +141,27 @@ class _WideLayout extends StatelessWidget {
     required this.rightTab,
     required this.onRightTabChanged,
     required this.onSettings,
+    required this.terminalOpen,
+    required this.terminalHeight,
+    required this.onToggleTerminal,
+    required this.onCloseTerminal,
+    required this.onResizeTerminal,
   });
 
   final int rightTab;
   final ValueChanged<int> onRightTabChanged;
   final VoidCallback onSettings;
+  final bool terminalOpen;
+  final double terminalHeight;
+  final VoidCallback onToggleTerminal;
+  final VoidCallback onCloseTerminal;
+  final ValueChanged<double> onResizeTerminal;
 
   @override
   Widget build(BuildContext context) {
     final palette = AppColors.of(context);
     final width = MediaQuery.sizeOf(context).width;
+    final cwd = context.watch<BrowserProvider>().currentPath;
 
     // Shrink panels gracefully on narrow desktop windows.
     final sidebarWidth = width < 1000 ? 180.0 : 210.0;
@@ -112,8 +182,19 @@ class _WideLayout extends StatelessWidget {
                 flex: 3,
                 child: Column(
                   children: [
-                    _WideTopBar(onSettings: onSettings),
+                    _WideTopBar(
+                      onSettings: onSettings,
+                      onToggleTerminal: onToggleTerminal,
+                      terminalOpen: terminalOpen,
+                    ),
                     const Expanded(child: FileListView()),
+                    if (terminalOpen)
+                      TerminalPanel(
+                        cwd: cwd,
+                        height: terminalHeight,
+                        onResize: onResizeTerminal,
+                        onClose: onCloseTerminal,
+                      ),
                   ],
                 ),
               ),
@@ -161,6 +242,11 @@ class _CompactLayout extends StatelessWidget {
     required this.onToggleDrawer,
     required this.onCloseDrawer,
     required this.onSettings,
+    required this.terminalOpen,
+    required this.terminalHeight,
+    required this.onToggleTerminal,
+    required this.onCloseTerminal,
+    required this.onResizeTerminal,
   });
 
   final int tab;
@@ -169,12 +255,18 @@ class _CompactLayout extends StatelessWidget {
   final VoidCallback onToggleDrawer;
   final VoidCallback onCloseDrawer;
   final VoidCallback onSettings;
+  final bool terminalOpen;
+  final double terminalHeight;
+  final VoidCallback onToggleTerminal;
+  final VoidCallback onCloseTerminal;
+  final ValueChanged<double> onResizeTerminal;
 
   static const _drawerWidth = 260.0;
 
   @override
   Widget build(BuildContext context) {
     final palette = AppColors.of(context);
+    final cwd = context.watch<BrowserProvider>().currentPath;
 
     return Stack(
       children: [
@@ -185,6 +277,8 @@ class _CompactLayout extends StatelessWidget {
               _CompactTopBar(
                 onMenu: onToggleDrawer,
                 onSettings: onSettings,
+                onToggleTerminal: onToggleTerminal,
+                terminalOpen: terminalOpen,
               ),
               Expanded(
                 child: IndexedStack(
@@ -197,6 +291,13 @@ class _CompactLayout extends StatelessWidget {
                   ],
                 ),
               ),
+              if (terminalOpen)
+                TerminalPanel(
+                  cwd: cwd,
+                  height: terminalHeight,
+                  onResize: onResizeTerminal,
+                  onClose: onCloseTerminal,
+                ),
               const PathStatusBar(),
               SafeArea(
                 top: false,
@@ -249,8 +350,14 @@ class _CompactLayout extends StatelessWidget {
 // ──────────────────────────────────────────────────────────────────────────
 
 class _WideTopBar extends StatelessWidget {
-  const _WideTopBar({required this.onSettings});
+  const _WideTopBar({
+    required this.onSettings,
+    required this.onToggleTerminal,
+    required this.terminalOpen,
+  });
   final VoidCallback onSettings;
+  final VoidCallback onToggleTerminal;
+  final bool terminalOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -292,7 +399,16 @@ class _WideTopBar extends StatelessWidget {
               const SizedBox(width: 8),
               // Tail group: grid/list, ollama model, settings.
               _ViewModeToggle(browser: browser),
-              const SizedBox(width: 8),
+              const SizedBox(width: 4),
+              _ToolbarIconButton(
+                icon: CupertinoIcons.chevron_left_slash_chevron_right,
+                tooltip:
+                    'Terminal (${Platform.isMacOS ? "⌘" : "Ctrl"}+J)',
+                onPressed: onToggleTerminal,
+                size: 30,
+                highlighted: terminalOpen,
+              ),
+              const SizedBox(width: 4),
               Flexible(
                 child: showFullPill
                     ? _ConnectionPill(
@@ -321,9 +437,16 @@ class _WideTopBar extends StatelessWidget {
 }
 
 class _CompactTopBar extends StatelessWidget {
-  const _CompactTopBar({required this.onMenu, required this.onSettings});
+  const _CompactTopBar({
+    required this.onMenu,
+    required this.onSettings,
+    required this.onToggleTerminal,
+    required this.terminalOpen,
+  });
   final VoidCallback onMenu;
   final VoidCallback onSettings;
+  final VoidCallback onToggleTerminal;
+  final bool terminalOpen;
 
   @override
   Widget build(BuildContext context) {
@@ -350,6 +473,12 @@ class _CompactTopBar extends StatelessWidget {
             child: _CurrentFolderLabel(path: browser.currentPath),
           ),
           const SizedBox(width: 4),
+          _ToolbarIconButton(
+            icon: CupertinoIcons.chevron_left_slash_chevron_right,
+            tooltip: 'Terminal',
+            onPressed: onToggleTerminal,
+            highlighted: terminalOpen,
+          ),
           _ConnectionDot(connected: settings.connected, onTap: onSettings),
           _ToolbarIconButton(
             icon: CupertinoIcons.settings,
@@ -597,12 +726,14 @@ class _ToolbarIconButton extends StatefulWidget {
     required this.onPressed,
     this.tooltip,
     this.size = 36,
+    this.highlighted = false,
   });
 
   final IconData icon;
   final VoidCallback? onPressed;
   final String? tooltip;
   final double size;
+  final bool highlighted;
 
   @override
   State<_ToolbarIconButton> createState() => _ToolbarIconButtonState();
@@ -616,6 +747,12 @@ class _ToolbarIconButtonState extends State<_ToolbarIconButton> {
     final palette = AppColors.of(context);
     final enabled = widget.onPressed != null;
     final iconSize = (widget.size * 0.5).clamp(14.0, 22.0);
+    final bg = widget.highlighted
+        ? palette.sidebarSelected
+        : (_hover && enabled ? palette.sidebarHover : null);
+    final iconColor = enabled
+        ? (widget.highlighted ? palette.accent : palette.subtleText)
+        : palette.subtleText.withValues(alpha: 0.4);
     return MouseRegion(
       cursor: enabled
           ? SystemMouseCursors.click
@@ -629,15 +766,13 @@ class _ToolbarIconButtonState extends State<_ToolbarIconButton> {
           width: widget.size,
           height: widget.size,
           decoration: BoxDecoration(
-            color: _hover && enabled ? palette.sidebarHover : null,
+            color: bg,
             borderRadius: BorderRadius.circular(6),
           ),
           child: Icon(
             widget.icon,
             size: iconSize,
-            color: enabled
-                ? palette.subtleText
-                : palette.subtleText.withValues(alpha: 0.4),
+            color: iconColor,
           ),
         ),
       ),

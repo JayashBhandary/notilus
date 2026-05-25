@@ -144,22 +144,27 @@ class SystemInfoService {
 
   Future<List<DiskUsage>> _readWindowsDrives() async {
     final usages = <DiskUsage>[];
+    // wmic was removed from default Windows installs (11 24H2+); use PowerShell.
+    // DriveType 2 = removable, 3 = fixed local disk.
+    const psCmd =
+        r"Get-CimInstance Win32_LogicalDisk -Filter 'DriveType=2 or DriveType=3' "
+        r"| ForEach-Object { $_.DeviceID + '|' + $_.Size + '|' + $_.FreeSpace }";
     try {
-      final res = await Process.run('wmic', [
-        'logicaldisk',
-        'get',
-        'name,size,freespace',
-        '/format:csv',
-      ]);
+      final res = await Process.run(
+        'powershell',
+        ['-NoProfile', '-NonInteractive', '-Command', psCmd],
+      );
       if (res.exitCode != 0) return const [];
       final lines = (res.stdout as String).split('\n');
       for (final raw in lines) {
-        final cells = raw.trim().split(',');
-        if (cells.length < 4) continue;
-        final free = int.tryParse(cells[1]);
-        final name = cells[2];
-        final size = int.tryParse(cells[3]);
-        if (free == null || size == null || name.isEmpty) continue;
+        final line = raw.trim();
+        if (line.isEmpty) continue;
+        final cells = line.split('|');
+        if (cells.length < 3) continue;
+        final name = cells[0];
+        final size = int.tryParse(cells[1]);
+        final free = int.tryParse(cells[2]);
+        if (name.isEmpty || size == null || free == null || size <= 0) continue;
         usages.add(DiskUsage(
           name: name,
           path: '$name\\',
@@ -169,6 +174,10 @@ class SystemInfoService {
           isRoot: name.toUpperCase() == 'C:',
         ));
       }
+      usages.sort((a, b) {
+        if (a.isRoot != b.isRoot) return a.isRoot ? -1 : 1;
+        return a.name.toLowerCase().compareTo(b.name.toLowerCase());
+      });
     } catch (_) {}
     return usages;
   }
