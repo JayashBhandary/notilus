@@ -2,10 +2,12 @@ import 'dart:io';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:provider/provider.dart';
 
 import '../models/file_entry.dart';
 import '../providers/browser_provider.dart';
+import '../services/thumbnail_service.dart';
 import '../theme.dart';
 import '../utils/responsive.dart';
 import 'file_list_view.dart' show openFilePreview;
@@ -212,6 +214,20 @@ class _Thumbnail extends StatelessWidget {
   final double size;
   final AppPalette palette;
 
+  static const _svgExts = {'.svg', '.svgz'};
+  static const _pdfExts = {'.pdf'};
+  static const _textExts = {
+    '.txt', '.md', '.markdown', '.mdown', '.log',
+    '.json', '.yaml', '.yml', '.xml', '.csv', '.tsv',
+    '.html', '.htm', '.css', '.scss', '.less',
+    '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx',
+    '.dart', '.py', '.rb', '.go', '.rs', '.c', '.cpp', '.cc', '.h', '.hpp',
+    '.java', '.kt', '.swift', '.sh', '.bash', '.zsh', '.fish',
+    '.toml', '.ini', '.conf', '.cfg', '.env',
+    '.lua', '.pl', '.php', '.sql', '.r', '.scala', '.groovy',
+    '.gradle', '.cmake',
+  };
+
   @override
   Widget build(BuildContext context) {
     if (entry.isDirectory) {
@@ -221,6 +237,7 @@ class _Thumbnail extends StatelessWidget {
         color: palette.folderIcon,
       );
     }
+    final ext = entry.extension;
     if (entry.isImage) {
       return ClipRRect(
         borderRadius: BorderRadius.circular(4),
@@ -233,6 +250,15 @@ class _Thumbnail extends StatelessWidget {
           errorBuilder: (_, __, ___) => _docPlaceholder(),
         ),
       );
+    }
+    if (_svgExts.contains(ext)) {
+      return _SvgThumb(entry: entry, size: size, palette: palette);
+    }
+    if (_pdfExts.contains(ext)) {
+      return _PdfThumb(entry: entry, size: size, palette: palette);
+    }
+    if (_textExts.contains(ext)) {
+      return _TextSnippetThumb(entry: entry, size: size, palette: palette);
     }
     return _docPlaceholder();
   }
@@ -303,5 +329,277 @@ class _Thumbnail extends StatelessWidget {
       default:
         return CupertinoIcons.doc;
     }
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// SVG thumbnail — direct render via flutter_svg.
+// ──────────────────────────────────────────────────────────────────────────
+
+class _SvgThumb extends StatelessWidget {
+  const _SvgThumb({
+    required this.entry,
+    required this.size,
+    required this.palette,
+  });
+  final FileEntry entry;
+  final double size;
+  final AppPalette palette;
+
+  Future<Uint8List> _bytes() async {
+    final raw = await File(entry.path).readAsBytes();
+    if (entry.name.toLowerCase().endsWith('.svgz') &&
+        raw.length >= 2 &&
+        raw[0] == 0x1F &&
+        raw[1] == 0x8B) {
+      try {
+        return Uint8List.fromList(gzip.decode(raw));
+      } catch (_) {
+        return raw;
+      }
+    }
+    return raw;
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<Uint8List>(
+      future: _bytes(),
+      builder: (_, snap) {
+        if (!snap.hasData) {
+          return _ThumbBox(
+            palette: palette,
+            child: const CupertinoActivityIndicator(radius: 8),
+          );
+        }
+        return _ThumbBox(
+          palette: palette,
+          child: SvgPicture.memory(
+            snap.data!,
+            fit: BoxFit.contain,
+            placeholderBuilder: (_) => const SizedBox.shrink(),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// PDF thumbnail — first page, cached on disk.
+// ──────────────────────────────────────────────────────────────────────────
+
+class _PdfThumb extends StatefulWidget {
+  const _PdfThumb({
+    required this.entry,
+    required this.size,
+    required this.palette,
+  });
+  final FileEntry entry;
+  final double size;
+  final AppPalette palette;
+
+  @override
+  State<_PdfThumb> createState() => _PdfThumbState();
+}
+
+class _PdfThumbState extends State<_PdfThumb> {
+  late final Future<File?> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = ThumbnailService.instance.pdfThumbnail(
+      widget.entry,
+      dim: (widget.size * 2).round().clamp(120, 480),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<File?>(
+      future: _future,
+      builder: (_, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return _ThumbBox(
+            palette: widget.palette,
+            child: const CupertinoActivityIndicator(radius: 8),
+          );
+        }
+        final f = snap.data;
+        if (f == null) {
+          return _DocLabelPlaceholder(
+            ext: widget.entry.extension,
+            icon: CupertinoIcons.doc_richtext,
+            size: widget.size,
+            palette: widget.palette,
+          );
+        }
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(color: widget.palette.divider),
+              color: const Color(0xFFFFFFFF),
+            ),
+            child: Image.file(
+              f,
+              width: widget.size,
+              height: widget.size,
+              fit: BoxFit.cover,
+              cacheWidth: (widget.size * 2).toInt(),
+              gaplessPlayback: true,
+              errorBuilder: (_, __, ___) => _DocLabelPlaceholder(
+                ext: widget.entry.extension,
+                icon: CupertinoIcons.doc_richtext,
+                size: widget.size,
+                palette: widget.palette,
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// ──────────────────────────────────────────────────────────────────────────
+// Text snippet thumbnail — Finder-style miniature of the first lines.
+// ──────────────────────────────────────────────────────────────────────────
+
+class _TextSnippetThumb extends StatefulWidget {
+  const _TextSnippetThumb({
+    required this.entry,
+    required this.size,
+    required this.palette,
+  });
+  final FileEntry entry;
+  final double size;
+  final AppPalette palette;
+
+  @override
+  State<_TextSnippetThumb> createState() => _TextSnippetThumbState();
+}
+
+class _TextSnippetThumbState extends State<_TextSnippetThumb> {
+  late final Future<String?> _future;
+
+  @override
+  void initState() {
+    super.initState();
+    _future = ThumbnailService.instance.textSnippet(widget.entry);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: _future,
+      builder: (_, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return _ThumbBox(
+            palette: widget.palette,
+            child: const CupertinoActivityIndicator(radius: 8),
+          );
+        }
+        final txt = snap.data;
+        if (txt == null || txt.trim().isEmpty) {
+          return _DocLabelPlaceholder(
+            ext: widget.entry.extension,
+            icon: CupertinoIcons.doc_text,
+            size: widget.size,
+            palette: widget.palette,
+          );
+        }
+        return ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: Container(
+            width: widget.size,
+            height: widget.size,
+            padding: const EdgeInsets.fromLTRB(4, 4, 4, 0),
+            decoration: BoxDecoration(
+              color: widget.palette.cardBg,
+              border: Border.all(color: widget.palette.divider),
+            ),
+            child: ClipRect(
+              child: Text(
+                txt,
+                maxLines: (widget.size / 7).round().clamp(4, 24),
+                overflow: TextOverflow.fade,
+                softWrap: true,
+                style: TextStyle(
+                  fontFamily: 'Menlo',
+                  fontSize: (widget.size / 18).clamp(4.5, 7.5),
+                  height: 1.15,
+                  color: widget.palette.text,
+                ),
+              ),
+            ),
+          ),
+        );
+      },
+    );
+  }
+}
+
+// Shared rounded outlined container for thumbnails that aren't full-bleed.
+class _ThumbBox extends StatelessWidget {
+  const _ThumbBox({required this.child, required this.palette});
+  final Widget child;
+  final AppPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.cardBg,
+        border: Border.all(color: palette.divider),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      padding: const EdgeInsets.all(4),
+      child: Center(child: child),
+    );
+  }
+}
+
+class _DocLabelPlaceholder extends StatelessWidget {
+  const _DocLabelPlaceholder({
+    required this.ext,
+    required this.icon,
+    required this.size,
+    required this.palette,
+  });
+  final String ext;
+  final IconData icon;
+  final double size;
+  final AppPalette palette;
+
+  @override
+  Widget build(BuildContext context) {
+    final label = ext.isEmpty ? '' : ext.substring(1).toUpperCase();
+    return Container(
+      decoration: BoxDecoration(
+        color: palette.cardBg,
+        border: Border.all(color: palette.divider),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(icon, size: size * 0.5, color: palette.subtleText),
+          if (label.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                fontSize: 9,
+                fontWeight: FontWeight.w600,
+                color: palette.subtleText,
+                letterSpacing: 0.3,
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
   }
 }

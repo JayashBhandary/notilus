@@ -111,6 +111,7 @@ class _ChatPanelState extends State<ChatPanel> {
                 ? null
                 : (v) => setState(() => _attachSelection = v),
             onSend: _send,
+            onStop: chat.busy ? chat.cancel : null,
             onClear: chat.messages.isEmpty ? null : chat.clear,
             busy: chat.busy,
           ),
@@ -170,6 +171,7 @@ class _ChatComposer extends StatelessWidget {
     required this.attachSelection,
     required this.onToggleAttach,
     required this.onSend,
+    required this.onStop,
     required this.onClear,
     required this.busy,
   });
@@ -179,8 +181,31 @@ class _ChatComposer extends StatelessWidget {
   final bool attachSelection;
   final ValueChanged<bool>? onToggleAttach;
   final VoidCallback onSend;
+  final VoidCallback? onStop;
   final VoidCallback? onClear;
   final bool busy;
+
+  IconData _attachmentIcon(dynamic sel) {
+    if (sel == null) return CupertinoIcons.doc;
+    final name = (sel.name as String).toLowerCase();
+    final ext = name.contains('.') ? name.substring(name.lastIndexOf('.')) : '';
+    const img = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic'};
+    const sheet = {'.xlsx', '.xls', '.ods', '.csv', '.tsv'};
+    const slide = {'.pptx', '.ppt', '.odp'};
+    if (img.contains(ext)) return CupertinoIcons.photo;
+    if (ext == '.pdf') return CupertinoIcons.doc_richtext;
+    if (sheet.contains(ext)) return CupertinoIcons.chart_bar_square;
+    if (slide.contains(ext)) return CupertinoIcons.rectangle_on_rectangle;
+    return CupertinoIcons.doc_text;
+  }
+
+  bool _isImage(dynamic sel) {
+    if (sel == null) return false;
+    final name = (sel.name as String).toLowerCase();
+    const img = {'.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.heic'};
+    final ext = name.contains('.') ? name.substring(name.lastIndexOf('.')) : '';
+    return img.contains(ext);
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -220,6 +245,14 @@ class _ChatComposer extends StatelessWidget {
                               : palette.subtleText,
                         ),
                         const SizedBox(width: 6),
+                        if (hasSelection) ...[
+                          Icon(
+                            _attachmentIcon(selection),
+                            size: 13,
+                            color: palette.subtleText,
+                          ),
+                          const SizedBox(width: 4),
+                        ],
                         Flexible(
                           child: Text(
                             hasSelection
@@ -249,6 +282,14 @@ class _ChatComposer extends StatelessWidget {
               ),
             ],
           ),
+          if (attached && _isImage(selection))
+            Padding(
+              padding: const EdgeInsets.only(top: 4, left: 22),
+              child: Text(
+                'Vision model required (e.g. llava, llama3.2-vision)',
+                style: TextStyle(fontSize: 10.5, color: palette.subtleText),
+              ),
+            ),
           const SizedBox(height: 6),
           Row(
             crossAxisAlignment: CrossAxisAlignment.end,
@@ -278,19 +319,14 @@ class _ChatComposer extends StatelessWidget {
                 height: 32,
                 child: CupertinoButton(
                   padding: EdgeInsets.zero,
-                  color: palette.accent,
+                  color: busy ? CupertinoColors.systemRed : palette.accent,
                   borderRadius: BorderRadius.circular(8),
-                  onPressed: busy ? null : onSend,
-                  child: busy
-                      ? const CupertinoActivityIndicator(
-                          color: CupertinoColors.white,
-                          radius: 8,
-                        )
-                      : const Icon(
-                          CupertinoIcons.arrow_up,
-                          size: 16,
-                          color: CupertinoColors.white,
-                        ),
+                  onPressed: busy ? onStop : onSend,
+                  child: Icon(
+                    busy ? CupertinoIcons.stop_fill : CupertinoIcons.arrow_up,
+                    size: 16,
+                    color: CupertinoColors.white,
+                  ),
                 ),
               ),
             ],
@@ -309,6 +345,36 @@ class _Bubble extends StatelessWidget {
   Widget build(BuildContext context) {
     final palette = AppColors.of(context);
     final isUser = message.role == ChatRole.user;
+    final isSystem = message.role == ChatRole.system;
+
+    if (isSystem) {
+      return Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 8),
+        child: Row(
+          children: [
+            Icon(
+              CupertinoIcons.info_circle,
+              size: 13,
+              color: palette.subtleText,
+            ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: SelectionArea(
+                child: Text(
+                  message.content,
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    height: 1.35,
+                    color: palette.subtleText,
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+
     return LayoutBuilder(
       builder: (ctx, constraints) {
         final maxBubble = constraints.maxWidth.isFinite

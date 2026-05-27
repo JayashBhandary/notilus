@@ -28,7 +28,7 @@ class NotilusApp extends StatelessWidget {
           create: (_) => BrowserProvider(fileService)..init(),
         ),
         ChangeNotifierProvider(
-          create: (_) => ChatProvider(fileService),
+          create: (_) => ChatProvider(),
         ),
         ChangeNotifierProvider(
           create: (_) => WorkflowProvider(settingsStore, fileService)..load(),
